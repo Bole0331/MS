@@ -83,32 +83,30 @@ int merge() {
 		return 0;
 	}
 	fprintf(stderr, "\rFinished: %.2f%%", 100.0*(++cnt) / (times));
-	int k = v.size(); 
 	q.pop();
-	v.push_back((v[a] + v[b]) / 2.0); 
-	order.push_back(0);
-	ok.push_back(true); 
-	ok[a] = ok[b] = false; 
-	next.push_back(next[a]);
+	v[a] = (v[a] + v[b]) / 2.0;
+	order[a] = 0;
+	ok[b] = false; 
+	map<int,int> tmp = next[a];
 	int l = next[b][a], r = next[a][b];
-	next[k].erase(b);
+	tmp.erase(b);
 	int t = l;
 	while (t != r) {
-		next[k][t] = next[b][t];
+		tmp[t] = next[b][t];
 		t = next[b][t];
 	}	
-	for (map<int, int>::iterator i = next[k].begin(); i != next[k].end(); i++) {
+	for (map<int, int>::iterator i = tmp.begin(); i != tmp.end(); i++) {
 		int w = i->first;
 		for (map<int, int>::iterator j = next[w].begin(); j != next[w].end(); j++) {
 			if ((j->first == a || j->first == b) && (j->second != a && j->second != b))
-				next[w][k] = j->second;
-			if (j->second == a || j->second == b) next[w][j->first] = k;
+				next[w][a] = j->second;
+			if (j->second == a || j->second == b) next[w][j->first] = a;
 		}
-		next[w].erase(a); 
 		next[w].erase(b);
 	}
-	update(k); 
-	for (map<int, int>::iterator i = next[k].begin(); i != next[k].end(); i++) 
+	next[a] = tmp;
+	update(a); 
+	for (map<int, int>::iterator i = next[a].begin(); i != next[a].end(); i++) 
 		update(i->first);
 	return 1;
 }
