@@ -1,6 +1,7 @@
 #include <iostream>
 #include <cstdlib>
 #include <ctime>
+#include <cmath>
 #include <vector>
 #include <set>
 #include <queue>
@@ -10,6 +11,8 @@
 #include "point.h"
 
 #define next nxt
+#define MAX 999999
+#define MIN -999999
 
 using namespace std;
 
@@ -23,7 +26,15 @@ vector<int> order;
 vector<map<int, int> > next;
 priority_queue<pair<double, Pair>, vector<pair<double, Pair> >, greater<pair<double, Pair> > > q;
 
-int times = 0, cnt = 0;
+int times = 0, cnt = 0, parti = 0;
+
+vector<vector<double> > bp;
+vector<bool> margin;
+vector<int> blockId;
+
+double xmin = MAX, xmax = MIN;
+double ymin = MAX, ymax = MIN;
+double zmin = MAX, zmax = MIN;
 
 double error(point &a, point &b, point &c, point &v){
 	point p(b[1] * c[2] - b[2] * c[1] + a[2] * c[1] - c[2] * a[1] + a[1] * b[2] - a[2] * b[1],
@@ -44,9 +55,12 @@ double value(int a, int b){
 }
 
 void update(int x) {
+	if (x < margin.size() && margin[x]) return;
+	order[x] += 1;
 	for (map<int, int>::iterator i = next[x].begin(); i != next[x].end(); i++) {
 		int a = i->first, b = x;
-		if (a > b) continue;
+		if ((a < margin.size() && margin[a])) continue;
+		if (a > b) swap(a, b);
 		q.push(pair<double, Pair>(value(a, b) + value(b, a), Pair(pair<int, int>(a, order[a]), pair<int,int>(b, order[b]))));
 	}
 }
@@ -93,13 +107,72 @@ int merge() {
 		next[w].erase(a); 
 		next[w].erase(b);
 	}
-	order[k] += 1;
-	for (map<int, int>::iterator i = next[k].begin(); i != next[k].end(); i++) 
-		order[i->first] += 1;
 	update(k); 
 	for (map<int, int>::iterator i = next[k].begin(); i != next[k].end(); i++) 
 		update(i->first);
 	return 1;
+}
+
+void prepare() {
+	for (int i = 0; i < v.size(); i++ ) {
+		if (margin[i]) continue;
+		for (map<int, int>::iterator j = next[i].begin(); j != next[i].end(); j++ ) 
+			if (i < j->first && !margin[j->first]) 
+				q.push(pair<double, Pair>(value(i, j->first) + value(j->first, i),
+					Pair(pair<int, int>(i, 0),pair<int,int>(j->first, 0))));
+	}
+}
+
+int getBlockId(point p) {
+	int x, y, z;
+	for (int i = 1; i <= parti; i++) {
+		if (p.x <= bp[0][i]) {
+			x = i - 1;
+			break;
+		}
+	}
+	for (int i = 1; i <= parti; i++) {
+		if (p.y <= bp[1][i]) {
+			y = i - 1;
+			break;
+		}
+	}
+	for (int i = 1; i <= parti; i++) {
+		if (p.z <= bp[2][i]) {
+			z = i - 1;
+			break;
+		}
+	}
+	return x * parti * parti + y * parti + z;
+}
+
+void buildPartition() {
+	vector<double> x,y,z;
+	double step_x = (xmax - xmin) / parti;
+	double step_y = (ymax - ymin) / parti;
+	double step_z = (zmax - zmin) / parti;
+	x.push_back(xmin); y.push_back(ymin); z.push_back(zmin);
+	for (int i = 1; i < parti; i++) {
+		x.push_back(xmin+i*step_x);
+		y.push_back(ymin+i*step_y);
+		z.push_back(zmin+i*step_z);
+	}
+	x.push_back(xmax); y.push_back(ymax); z.push_back(zmax);
+	bp.push_back(x); bp.push_back(y); bp.push_back(z);
+	blockId.reserve(v.size());
+	for (int i = 0; i < v.size(); i++) {
+		blockId.push_back(getBlockId(v[i]));
+	}
+	for (int i = 0; i < v.size(); i++) {
+		if (margin[i]) continue;
+		for (map<int, int>::iterator j = next[i].begin(); j != next[i].end(); j++) {
+			if (blockId[i] != blockId[j->first]) {
+				margin[i] = true;
+				margin[j->first] = true;
+				break;
+			}
+		} 
+	}
 }
 
 void readFile() {
@@ -111,6 +184,10 @@ void readFile() {
 			v.push_back(tmp); 
 			ok.push_back(true); 
 			order.push_back(0);
+			margin.push_back(false);
+			xmax = max(tmp.x,xmax); xmin = min(tmp.x,xmin);
+			ymax = max(tmp.y,ymax); ymin = min(tmp.y,ymin);
+			zmax = max(tmp.z,zmax); zmin = min(tmp.z,zmin);
 		} else if (flag == 'f') {
 			if (next.size() == 0) {
 				next.resize(v.size());
@@ -124,37 +201,31 @@ void readFile() {
 			for (int i = 0; i < 3; i ++) next[a[i]][a[i + 1]] = a[i + 2];
 		} else cin.getline(head, 128);
 	}
-}
-
-void prepare() {
-	for (int i = 0; i < v.size(); i++ ) 
-		for (map<int, int>::iterator j = next[i].begin(); j != next[i].end(); j++ ) 
-			if (i < j->first) 
-				q.push(pair<double, Pair>(value(i, j->first) + value(j->first, i),
-					Pair(pair<int, int>(i, 0),pair<int,int>(j->first, 0))));
+	buildPartition();
 }
 
 int main(int argc, char * argv[]){
-	if ( argc != 4 ) {
-		printf("usage: ./meshSimplification input ouput ratio\n");
+	if ( argc != 5 ) {
+		printf("usage: ./meshSimplification input output ratio parti\n");
 		return 0;
 	}
 	freopen(argv[1], "r", stdin);
 	freopen(argv[2], "w", stdout);
+	parti = atoi(argv[4]);
 	readFile();
+	times = v.size() * (1.0 - atof(argv[3]));
 	fprintf(stderr, "Reading file finished\n");
 	prepare();
-	times = v.size() * (1.0 - atof(argv[3]));
+	int avai = 0;
+	for (int i = 0; i < v.size(); i++) {
+		if (!margin[i]) avai += 1;
+	}
+	times = min(times,avai - 200);
 	int num = 0;
-	struct timeval tvs,tve;
-	gettimeofday(&tvs,NULL);
 	while(true) {
 		num += merge();
 		if ( num >= times ) break;
 	}
-	gettimeofday(&tve,NULL);
-	double span = tve.tv_sec-tvs.tv_sec + (tve.tv_usec-tvs.tv_usec)/1000000.0;
-	fprintf(stderr, "total time: %f\n", span);
 	int n = 0;
 	vector<int> id;
 	id.resize(v.size());
