@@ -218,7 +218,7 @@ int main(int argc, char * argv[]){
 	for (int i = 0; i < v.size(); i++) {
 		if (!margin[i]) avai += 1;
 	}
-	times = min(times,avai - 200);
+	times = min(times,avai * 9 / 10);
 	int num = 0;
 	while(true) {
 		num += merge();
