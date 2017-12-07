@@ -36,7 +36,9 @@ vector<int> local_times;
 int numGlobal = 0;
 mutex mtx; 
 
-int times = 0, cnt = 0, parti = 0;
+mutex marginLock;
+
+int cnt = 0, parti = 0;
 double percentage = 0;
 
 vector<vector<double> > bp;
@@ -77,11 +79,10 @@ double value(int a, int b){
 }
 
 void update(int x, priority_queue<pair<double, Pair>, vector<pair<double, Pair> >, greater<pair<double, Pair> > >& q) {
-	if (x < margin.size() && margin[x]) return;
 	order[x] += 1;
 	for (map<int, int>::iterator i = next[x].begin(); i != next[x].end(); i++) {
 		int a = i->first, b = x;
-		if ((a < margin.size() && margin[a])) continue;
+		if (margin[a] && margin[b] && blockId[a] != blockId[b]) continue;
 		if (a > b) swap(a, b);
 		q.push(pair<double, Pair>(value(a, b) + value(b, a), Pair(pair<int, int>(a, order[a]), pair<int,int>(b, order[b]))));
 	}
@@ -104,6 +105,12 @@ int merge(int id, priority_queue<pair<double, Pair>, vector<pair<double, Pair> >
 	if (!ok[a] || !ok[b] || (!goodpair(a, b))) {
 		q.pop(); 
 		return 0;
+	}
+	bool mergeMargin = false;
+	if (margin[a] || margin[b]) {
+		mergeMargin = true;
+		margin[a] = true;
+		marginLock.lock();
 	}
 	q.pop();
 	v[a] = (v[a] + v[b]) / 2.0;
@@ -129,7 +136,9 @@ int merge(int id, priority_queue<pair<double, Pair>, vector<pair<double, Pair> >
 	next[a] = tmp;
 	update(a, q); 
 	for (map<int, int>::iterator i = next[a].begin(); i != next[a].end(); i++) 
-		update(i->first, q);
+		if (blockId[i->first] == blockId[a])
+			update(i->first, q);
+	if (mergeMargin) marginLock.unlock();
 	return 1;
 }
 
@@ -138,15 +147,15 @@ void prepare(int id) {
 	int _margin = 0;
 	int partitionSize = getPartitionSize(id,_margin);
 	int local_time = partitionSize * (1.0 - percentage);
-	local_time = min(local_time,(partitionSize-_margin)*9999/10000);
 	local_times.push_back(local_time);
 	for (int i = 0; i < v.size(); i++ ) {
 		if (blockId[i] != id) continue;
-		if (margin[i]) continue;
-		for (map<int, int>::iterator j = next[i].begin(); j != next[i].end(); j++ ) 
-			if (i < j->first && !margin[j->first]) 
+		for (map<int, int>::iterator j = next[i].begin(); j != next[i].end(); j++ ) {
+			if (margin[i] && margin[j->first] && blockId[i] != blockId[j->first]) continue;
+			if (i < j->first) 
 				q.push(pair<double, Pair>(value(i, j->first) + value(j->first, i),
 					Pair(pair<int, int>(i, 0),pair<int,int>(j->first, 0))));
+		}
 	}
 	qs.push_back(q);
 }
@@ -268,7 +277,6 @@ int main(int argc, char * argv[]){
 	freopen(argv[2], "w", stdout);
 	parti = atoi(argv[4]);
 	readFile();
-	times = v.size() * (1.0 - atof(argv[3]));
 	percentage = atof(argv[3]);
 	fprintf(stderr, "Reading file finished\n");
 	for (int i = 0; i < parti * parti * parti; i++) prepare(i);
