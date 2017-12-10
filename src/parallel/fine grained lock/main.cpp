@@ -32,7 +32,7 @@ vector<int> order;
 
 vector<map<int, int> > next;
 vector<priority_queue<pair<double, Pair>, vector<pair<double, Pair> >, greater<pair<double, Pair> > > > qs;
-vector<int> local_times;
+vector<long> local_times;
 int numGlobal = 0;
 mutex mtx; 
 
@@ -50,8 +50,8 @@ double xmin = MAX, xmax = MIN;
 double ymin = MAX, ymax = MIN;
 double zmin = MAX, zmax = MIN;
 
-int getPartitionSize(int id, int& _margin) {
-	int ret = 0;
+long getPartitionSize(int id, long& _margin) {
+	long ret = 0;
 	for (int i = 0; i < blockId.size(); i++) {
 		if (blockId[i] == id) {
 			ret++;
@@ -176,10 +176,9 @@ int merge(int id, priority_queue<pair<double, Pair>, vector<pair<double, Pair> >
 
 void prepare(int id) {
 	priority_queue<pair<double, Pair>, vector<pair<double, Pair> >, greater<pair<double, Pair> > > q;
-	int _margin = 0;
-	int partitionSize = getPartitionSize(id,_margin);
-	int local_time = partitionSize * (1.0 - percentage);
-	//local_time = min(local_time,(partitionSize-_margin)*999/1000);
+	long _margin = 0;
+	long partitionSize = getPartitionSize(id,_margin);
+	long local_time = (long)(partitionSize * (1.0 - percentage));
 	local_times.push_back(local_time);
 	for (int i = 0; i < v.size(); i++ ) {
 		if (blockId[i] != id) continue;

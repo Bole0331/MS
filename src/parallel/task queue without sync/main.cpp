@@ -32,7 +32,7 @@ vector<int> order;
 
 vector<map<int, int> > next;
 vector<priority_queue<pair<double, Pair>, vector<pair<double, Pair> >, greater<pair<double, Pair> > > > qs;
-vector<int> local_times;
+vector<long> local_times;
 int numGlobal = 0;
 mutex mtx; 
 
@@ -47,8 +47,8 @@ double xmin = MAX, xmax = MIN;
 double ymin = MAX, ymax = MIN;
 double zmin = MAX, zmax = MIN;
 
-int getPartitionSize(int id, int& _margin) {
-	int ret = 0;
+int getPartitionSize(int id, long& _margin) {
+	long ret = 0;
 	for (int i = 0; i < blockId.size(); i++) {
 		if (blockId[i] == id) {
 			ret++;
@@ -135,9 +135,9 @@ int merge(int id, priority_queue<pair<double, Pair>, vector<pair<double, Pair> >
 
 void prepare(int id) {
 	priority_queue<pair<double, Pair>, vector<pair<double, Pair> >, greater<pair<double, Pair> > > q;
-	int _margin = 0;
-	int partitionSize = getPartitionSize(id,_margin);
-	int local_time = partitionSize * (1.0 - percentage);
+	long _margin = 0;
+	long partitionSize = getPartitionSize(id,_margin);
+	long local_time = (long)(partitionSize * (1.0 - percentage));
 	local_time = min(local_time,(partitionSize-_margin)*9999/10000);
 	local_times.push_back(local_time);
 	for (int i = 0; i < v.size(); i++ ) {
@@ -243,9 +243,9 @@ void *func(void* args) {
     	mtx.unlock();
     	if (myOrder >= parti * parti * parti) break;
     	int num = 0;
-    	int local_time = local_times[myOrder];
+    	long local_time = local_times[myOrder];
     	priority_queue<pair<double, Pair>, vector<pair<double, Pair> >, greater<pair<double, Pair> > > q = qs[myOrder];
-    	fprintf(stderr, "thread %d's current size is: %d\n", id, local_time);
+    	fprintf(stderr, "thread %d's current size is: %ld\n", id, local_time);
     	while(true) {
     		if (num >= local_time || local_time < 2) break;
     		int tmp = merge(id, q);
