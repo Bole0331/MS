@@ -9,6 +9,10 @@
 #include <sys/time.h>
 #include <sys/resource.h>
 #include "point.h"
+#include <pthread.h>
+#include <time.h>
+#include <sys/time.h>
+#include <sys/resource.h>
 
 #define next nxt
 #define MAX 999999
@@ -24,9 +28,9 @@ vector<bool> ok;
 vector<int> order;
 
 vector<map<int, int> > next;
-priority_queue<pair<double, Pair>, vector<pair<double, Pair> >, greater<pair<double, Pair> > > q;
 
-int times = 0, cnt = 0, parti = 0;
+int cnt = 0, parti = 0;
+double percentage = 0;
 
 vector<vector<double> > bp;
 vector<bool> margin;
@@ -35,6 +39,17 @@ vector<int> blockId;
 double xmin = MAX, xmax = MIN;
 double ymin = MAX, ymax = MIN;
 double zmin = MAX, zmax = MIN;
+
+long getPartitionSize(int id, long& _margin) {
+	long ret = 0;
+	for (int i = 0; i < blockId.size(); i++) {
+		if (blockId[i] == id) {
+			ret++;
+			if (margin[i]) _margin += 1;
+		}
+	}
+	return ret;
+}
 
 double error(point &a, point &b, point &c, point &v){
 	point p(b[1] * c[2] - b[2] * c[1] + a[2] * c[1] - c[2] * a[1] + a[1] * b[2] - a[2] * b[1],
@@ -54,13 +69,12 @@ double value(int a, int b){
 	return res;
 }
 
-void update(int x) {
-	//if (x < margin.size() && margin[x]) return;
+void update(int x, priority_queue<pair<double, Pair>, vector<pair<double, Pair> >, greater<pair<double, Pair> > >& q) {
+	if (x < margin.size() && margin[x]) return;
 	order[x] += 1;
 	for (map<int, int>::iterator i = next[x].begin(); i != next[x].end(); i++) {
 		int a = i->first, b = x;
-		if (margin[a] && margin[b] && margin[a] != margin[b]) continue;
-		//if ((a < margin.size() && margin[a])) continue;
+		if ((a < margin.size() && margin[a])) continue;
 		if (a > b) swap(a, b);
 		q.push(pair<double, Pair>(value(a, b) + value(b, a), Pair(pair<int, int>(a, order[a]), pair<int,int>(b, order[b]))));
 	}
@@ -73,7 +87,8 @@ bool goodpair(int x, int y) {
 	return cnt == 2;
 }
 
-int merge() {
+int merge(int id, priority_queue<pair<double, Pair>, vector<pair<double, Pair> >, greater<pair<double, Pair> > >& q) {
+	if (q.size() < 1) return -1;
 	int a = q.top().second.first.first, b = q.top().second.second.first;
 	if (q.top().second.first.second != order[a] || q.top().second.second.second != order[b]) {
 		q.pop(); 
@@ -83,7 +98,6 @@ int merge() {
 		q.pop(); 
 		return 0;
 	}
-	fprintf(stderr, "\rFinished: %.2f%%", 100.0*(++cnt) / (times));
 	q.pop();
 	v[a] = (v[a] + v[b]) / 2.0;
 	order[a] = 0;
@@ -106,22 +120,20 @@ int merge() {
 		next[w].erase(b);
 	}
 	next[a] = tmp;
-	update(a); 
+	update(a, q); 
 	for (map<int, int>::iterator i = next[a].begin(); i != next[a].end(); i++) 
-		update(i->first);
+		update(i->first, q);
 	return 1;
 }
 
-void prepare() {
+void prepare(int id, priority_queue<pair<double, Pair>, vector<pair<double, Pair> >, greater<pair<double, Pair> > >& q) {
 	for (int i = 0; i < v.size(); i++ ) {
-		//if (margin[i]) continue;
-		for (map<int, int>::iterator j = next[i].begin(); j != next[i].end(); j++ ) {
-			if (margin[i] && margin[j->first] && blockId[i] != blockId[j->first]) continue;
-			//if (i < j->first && !margin[j->first]) 
-			if (i < j->first)
+		if (blockId[i] != id) continue;
+		if (margin[i]) continue;
+		for (map<int, int>::iterator j = next[i].begin(); j != next[i].end(); j++ ) 
+			if (i < j->first && !margin[j->first]) 
 				q.push(pair<double, Pair>(value(i, j->first) + value(j->first, i),
 					Pair(pair<int, int>(i, 0),pair<int,int>(j->first, 0))));
-		}
 	}
 }
 
@@ -206,6 +218,30 @@ void readFile() {
 	buildPartition();
 }
 
+void *func(void* args) {
+	int id = *((int*) args);
+	priority_queue<pair<double, Pair>, vector<pair<double, Pair> >, greater<pair<double, Pair> > > q;
+	prepare(id, q);
+	long _margin = 0;
+	long partitionSize = getPartitionSize(id,_margin);
+	long local_time = (long)(partitionSize * (1.0 - percentage));
+	local_time = min(local_time,(partitionSize-_margin)*19999/20000);
+	int num = 0;
+	fprintf(stderr, "thread %d's current size is: %d\n", id, local_time);
+	struct timeval tvs,tve;
+    gettimeofday(&tvs,NULL);
+	while(true) {
+		if (num >= local_time || local_time < 2) break;
+		int tmp = merge(id, q);
+		if (tmp == -1) break;
+		num += tmp;
+	}
+	gettimeofday(&tve,NULL);
+    double span = tve.tv_sec-tvs.tv_sec + (tve.tv_usec-tvs.tv_usec)/1000000.0;
+    fprintf(stderr, "thread %d's total time: %f\n", id, span);
+	return NULL;
+}
+
 int main(int argc, char * argv[]){
 	if ( argc != 5 ) {
 		printf("usage: ./meshSimplification input output ratio parti\n");
@@ -214,20 +250,25 @@ int main(int argc, char * argv[]){
 	freopen(argv[1], "r", stdin);
 	freopen(argv[2], "w", stdout);
 	parti = atoi(argv[4]);
+	int NUM_THREADS  = parti * parti * parti;
+	pthread_t threads[NUM_THREADS];
 	readFile();
-	times = v.size() * (1.0 - atof(argv[3]));
+	percentage = atof(argv[3]);
 	fprintf(stderr, "Reading file finished\n");
-	prepare();
-	int avai = 0;
-	for (int i = 0; i < v.size(); i++) {
-		if (!margin[i]) avai += 1;
+	struct timeval tvs,tve;
+    gettimeofday(&tvs,NULL);
+	int ids[NUM_THREADS];
+	for (int i = 0; i < NUM_THREADS; i++) {
+		ids[i] = i;
+		pthread_create(&threads[i], NULL, func, (void*) &ids[i]);
 	}
-	//times = min(times,avai * 999 / 1000);
-	int num = 0;
-	while(true) {
-		num += merge();
-		if ( num >= times ) break;
+	for (int i = 0; i < NUM_THREADS; i++) {
+		pthread_join(threads[i], NULL);
 	}
+	gettimeofday(&tve,NULL);
+    double span = tve.tv_sec-tvs.tv_sec + (tve.tv_usec-tvs.tv_usec)/1000000.0;
+    fprintf(stderr, "total time: %f\n", span);
+
 	int n = 0;
 	vector<int> id;
 	id.resize(v.size());

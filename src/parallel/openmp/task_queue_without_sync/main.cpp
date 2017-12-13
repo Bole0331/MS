@@ -13,23 +13,32 @@
 #include <time.h>
 #include <sys/time.h>
 #include <sys/resource.h>
+#include <mutex> 
+#include <omp.h>
+#include <stdio.h>
 
 #define next nxt
 #define MAX 999999
 #define MIN -999999
+#define NUM_THREADS 8
 
 using namespace std;
 
 typedef pair<pair<int, int>, pair<int, int> > Pair;
 
+pthread_t threads[NUM_THREADS];
 vector<point> v;
 // for exact correctness 
 vector<bool> ok;
 vector<int> order;
 
 vector<map<int, int> > next;
+vector<priority_queue<pair<double, Pair>, vector<pair<double, Pair> >, greater<pair<double, Pair> > > > qs;
+vector<long> local_times;
+int numGlobal = 0;
+mutex mtx; 
 
-int cnt = 0, parti = 0;
+int times = 0, cnt = 0, parti = 0;
 double percentage = 0;
 
 vector<vector<double> > bp;
@@ -40,8 +49,8 @@ double xmin = MAX, xmax = MIN;
 double ymin = MAX, ymax = MIN;
 double zmin = MAX, zmax = MIN;
 
-int getPartitionSize(int id, int& _margin) {
-	int ret = 0;
+int getPartitionSize(int id, long& _margin) {
+	long ret = 0;
 	for (int i = 0; i < blockId.size(); i++) {
 		if (blockId[i] == id) {
 			ret++;
@@ -126,7 +135,13 @@ int merge(int id, priority_queue<pair<double, Pair>, vector<pair<double, Pair> >
 	return 1;
 }
 
-void prepare(int id, priority_queue<pair<double, Pair>, vector<pair<double, Pair> >, greater<pair<double, Pair> > >& q) {
+void prepare(int id) {
+	priority_queue<pair<double, Pair>, vector<pair<double, Pair> >, greater<pair<double, Pair> > > q;
+	long _margin = 0;
+	long partitionSize = getPartitionSize(id,_margin);
+	long local_time = (long)(partitionSize * (1.0 - percentage));
+	local_time = min(local_time,(partitionSize-_margin)*9999/10000);
+	local_times.push_back(local_time);
 	for (int i = 0; i < v.size(); i++ ) {
 		if (blockId[i] != id) continue;
 		if (margin[i]) continue;
@@ -135,6 +150,7 @@ void prepare(int id, priority_queue<pair<double, Pair>, vector<pair<double, Pair
 				q.push(pair<double, Pair>(value(i, j->first) + value(j->first, i),
 					Pair(pair<int, int>(i, 0),pair<int,int>(j->first, 0))));
 	}
+	qs.push_back(q);
 }
 
 int getBlockId(point p) {
@@ -218,31 +234,43 @@ void readFile() {
 	buildPartition();
 }
 
-void *func(void* args) {
-	int id = *((int*) args);
-	priority_queue<pair<double, Pair>, vector<pair<double, Pair> >, greater<pair<double, Pair> > > q;
-	prepare(id, q);
-	int _margin = 0;
-	int partitionSize = getPartitionSize(id,_margin);
-	int local_time = partitionSize * (1.0 - percentage);
-	local_time = min(local_time,(partitionSize-_margin)*999/1000);
-	int num = 0;
-	fprintf(stderr, "thread %d's current size is: %d\n", id, local_time);
+void func(int id) {
+	//int id = *((int*) args);
 	struct timeval tvs,tve;
     gettimeofday(&tvs,NULL);
-	while(true) {
-		if (num >= local_time || local_time < 2) break;
-		int tmp = merge(id, q);
-		if (tmp == -1) break;
-		num += tmp;
-	}
+    int myOrder = 0;
+    while(true) {
+    	mtx.lock();
+    	myOrder = numGlobal++;
+    	mtx.unlock();
+    	if (myOrder >= parti * parti * parti) break;
+    	int num = 0;
+    	long local_time = local_times[myOrder];
+    	priority_queue<pair<double, Pair>, vector<pair<double, Pair> >, greater<pair<double, Pair> > > q = qs[myOrder];
+    	fprintf(stderr, "thread %d's current size is: %ld\n", id, local_time);
+    	while(true) {
+    		if (num >= local_time || local_time < 2) break;
+    		int tmp = merge(id, q);
+    		if (tmp == -1) break;
+			num += tmp;
+		}
+    }
 	gettimeofday(&tve,NULL);
     double span = tve.tv_sec-tvs.tv_sec + (tve.tv_usec-tvs.tv_usec)/1000000.0;
     fprintf(stderr, "thread %d's total time: %f\n", id, span);
-	return NULL;
+	//return NULL;
 }
 
 int main(int argc, char * argv[]){
+	int nthreads, tid;
+
+    /* Check how many processors are available */
+
+    printf("There are %d processors\n", omp_get_num_procs());
+
+    /* Set the number of threads to 4 */
+    omp_set_num_threads(NUM_THREADS);
+
 	if ( argc != 5 ) {
 		printf("usage: ./meshSimplification input output ratio parti\n");
 		return 0;
@@ -250,25 +278,37 @@ int main(int argc, char * argv[]){
 	freopen(argv[1], "r", stdin);
 	freopen(argv[2], "w", stdout);
 	parti = atoi(argv[4]);
-	int NUM_THREADS  = parti * parti * parti;
-	pthread_t threads[NUM_THREADS];
 	readFile();
+	times = v.size() * (1.0 - atof(argv[3]));
 	percentage = atof(argv[3]);
 	fprintf(stderr, "Reading file finished\n");
+	for (int i = 0; i < parti * parti * parti; i++) prepare(i);
+	for (int i = 0; i < parti * parti * parti; i++)
+		for (int j = i + 1; j < parti * parti * parti; j++)
+			if (local_times[i]<local_times[j]) {
+				int tmp = local_times[i];
+				local_times[i] = local_times[j];
+				local_times[j] = tmp;
+				priority_queue<pair<double, Pair>, vector<pair<double, Pair> >, greater<pair<double, Pair> > > q_tmp = qs[i];
+				qs[i] = qs[j];
+				qs[j] = q_tmp;
+			}
 	struct timeval tvs,tve;
     gettimeofday(&tvs,NULL);
-	int ids[NUM_THREADS];
-	for (int i = 0; i < NUM_THREADS; i++) {
-		ids[i] = i;
-		pthread_create(&threads[i], NULL, func, (void*) &ids[i]);
-	}
-	for (int i = 0; i < NUM_THREADS; i++) {
-		pthread_join(threads[i], NULL);
-	}
+	#pragma omp parallel private(nthreads, tid)
+    {
+
+        /* Obtain and print thread id */
+        tid = omp_get_thread_num();
+        nthreads = omp_get_num_threads();
+        //printf("Hello World from thread = %d, total %d\n", tid, nthreads);
+
+        func(tid);
+    }  /* All threads join master thread and terminate */
+
 	gettimeofday(&tve,NULL);
     double span = tve.tv_sec-tvs.tv_sec + (tve.tv_usec-tvs.tv_usec)/1000000.0;
     fprintf(stderr, "total time: %f\n", span);
-
 	int n = 0;
 	vector<int> id;
 	id.resize(v.size());

@@ -9,24 +9,42 @@
 #include <sys/time.h>
 #include <sys/resource.h>
 #include "point.h"
+#include <pthread.h>
+#include <time.h>
+#include <sys/time.h>
+#include <sys/resource.h>
+#include <mutex> 
+#include <omp.h>
+#include <stdio.h>
 
 #define next nxt
 #define MAX 999999
 #define MIN -999999
+//#define NUM_THREADS 8
 
 using namespace std;
 
+int NUM_THREADS = 0;
+
 typedef pair<pair<int, int>, pair<int, int> > Pair;
 
+//pthread_t threads[NUM_THREADS];
 vector<point> v;
 // for exact correctness 
 vector<bool> ok;
 vector<int> order;
 
 vector<map<int, int> > next;
-priority_queue<pair<double, Pair>, vector<pair<double, Pair> >, greater<pair<double, Pair> > > q;
+vector<priority_queue<pair<double, Pair>, vector<pair<double, Pair> >, greater<pair<double, Pair> > > > qs;
+vector<long> local_times;
+int numGlobal = 0;
+mutex mtx; 
 
-int times = 0, cnt = 0, parti = 0;
+mutex marginLock;
+vector<bool> doing;
+
+int cnt = 0, parti = 0;
+double percentage = 0;
 
 vector<vector<double> > bp;
 vector<bool> margin;
@@ -35,6 +53,17 @@ vector<int> blockId;
 double xmin = MAX, xmax = MIN;
 double ymin = MAX, ymax = MIN;
 double zmin = MAX, zmax = MIN;
+
+long getPartitionSize(int id, long& _margin) {
+	long ret = 0;
+	for (int i = 0; i < blockId.size(); i++) {
+		if (blockId[i] == id) {
+			ret++;
+			if (margin[i]) _margin += 1;
+		}
+	}
+	return ret;
+}
 
 double error(point &a, point &b, point &c, point &v){
 	point p(b[1] * c[2] - b[2] * c[1] + a[2] * c[1] - c[2] * a[1] + a[1] * b[2] - a[2] * b[1],
@@ -54,13 +83,11 @@ double value(int a, int b){
 	return res;
 }
 
-void update(int x) {
-	//if (x < margin.size() && margin[x]) return;
+void update(int x, priority_queue<pair<double, Pair>, vector<pair<double, Pair> >, greater<pair<double, Pair> > >& q) {
 	order[x] += 1;
 	for (map<int, int>::iterator i = next[x].begin(); i != next[x].end(); i++) {
 		int a = i->first, b = x;
-		if (margin[a] && margin[b] && margin[a] != margin[b]) continue;
-		//if ((a < margin.size() && margin[a])) continue;
+		if (margin[a] && margin[b] && blockId[a] != blockId[b]) continue;
 		if (a > b) swap(a, b);
 		q.push(pair<double, Pair>(value(a, b) + value(b, a), Pair(pair<int, int>(a, order[a]), pair<int,int>(b, order[b]))));
 	}
@@ -73,7 +100,41 @@ bool goodpair(int x, int y) {
 	return cnt == 2;
 }
 
-int merge() {
+void getMarginLock(int a, int b) {
+	bool out = false;
+	while(out) {
+		marginLock.lock();
+		out = true;
+		for (map<int, int>::iterator i = next[a].begin(); i != next[a].end(); i++) {
+			if (doing[i->first]) {
+				out = false;
+				break;
+			}
+		}
+		if (out)
+			for (map<int, int>::iterator i = next[b].begin(); i != next[b].end(); i++) {
+				if (doing[i->first]) {
+					out = false;
+					break;
+				}
+			}
+		if (out) {
+			doing[a] = true;
+			doing[b] = true;
+		}
+		marginLock.unlock();
+	}
+}
+
+void releaseMarginLock(int a, int b) {
+	marginLock.lock();
+	doing[a] = false;
+	doing[b] = false;
+	marginLock.unlock();
+}
+
+int merge(int id, priority_queue<pair<double, Pair>, vector<pair<double, Pair> >, greater<pair<double, Pair> > >& q) {
+	if (q.size() < 1) return -1;
 	int a = q.top().second.first.first, b = q.top().second.second.first;
 	if (q.top().second.first.second != order[a] || q.top().second.second.second != order[b]) {
 		q.pop(); 
@@ -83,7 +144,10 @@ int merge() {
 		q.pop(); 
 		return 0;
 	}
-	fprintf(stderr, "\rFinished: %.2f%%", 100.0*(++cnt) / (times));
+	if (margin[a] || margin[b]) {
+		getMarginLock(a,b);
+		margin[a] = true;
+	}
 	q.pop();
 	v[a] = (v[a] + v[b]) / 2.0;
 	order[a] = 0;
@@ -106,23 +170,30 @@ int merge() {
 		next[w].erase(b);
 	}
 	next[a] = tmp;
-	update(a); 
+	update(a, q); 
 	for (map<int, int>::iterator i = next[a].begin(); i != next[a].end(); i++) 
-		update(i->first);
+		if (blockId[i->first] == blockId[a])
+			update(i->first, q);
+	if (margin[a]) releaseMarginLock(a,b);
 	return 1;
 }
 
-void prepare() {
+void prepare(int id) {
+	priority_queue<pair<double, Pair>, vector<pair<double, Pair> >, greater<pair<double, Pair> > > q;
+	long _margin = 0;
+	long partitionSize = getPartitionSize(id,_margin);
+	long local_time = (long)(partitionSize * (1.0 - percentage));
+	local_times.push_back(local_time);
 	for (int i = 0; i < v.size(); i++ ) {
-		//if (margin[i]) continue;
+		if (blockId[i] != id) continue;
 		for (map<int, int>::iterator j = next[i].begin(); j != next[i].end(); j++ ) {
 			if (margin[i] && margin[j->first] && blockId[i] != blockId[j->first]) continue;
-			//if (i < j->first && !margin[j->first]) 
-			if (i < j->first)
+			if (i < j->first) 
 				q.push(pair<double, Pair>(value(i, j->first) + value(j->first, i),
 					Pair(pair<int, int>(i, 0),pair<int,int>(j->first, 0))));
 		}
 	}
+	qs.push_back(q);
 }
 
 int getBlockId(point p) {
@@ -187,6 +258,7 @@ void readFile() {
 			ok.push_back(true); 
 			order.push_back(0);
 			margin.push_back(false);
+			doing.push_back(false);
 			xmax = max(tmp.x,xmax); xmin = min(tmp.x,xmin);
 			ymax = max(tmp.y,ymax); ymin = min(tmp.y,ymin);
 			zmax = max(tmp.z,zmax); zmin = min(tmp.z,zmin);
@@ -206,8 +278,44 @@ void readFile() {
 	buildPartition();
 }
 
+void func(int id) {
+	//int id = *((int*) args);
+	struct timeval tvs,tve;
+    gettimeofday(&tvs,NULL);
+    int myOrder = 0;
+    while(true) {
+    	mtx.lock();
+    	myOrder = numGlobal++;
+    	mtx.unlock();
+    	if (myOrder >= parti * parti * parti) break;
+    	int num = 0;
+    	int local_time = local_times[myOrder];
+    	priority_queue<pair<double, Pair>, vector<pair<double, Pair> >, greater<pair<double, Pair> > > q = qs[myOrder];
+    	fprintf(stderr, "thread %d's current size is: %d\n", id, local_time);
+    	while(true) {
+    		if (num >= local_time || local_time < 2) break;
+    		int tmp = merge(id, q);
+    		if (tmp == -1) break;
+			num += tmp;
+		}
+    }
+	gettimeofday(&tve,NULL);
+    double span = tve.tv_sec-tvs.tv_sec + (tve.tv_usec-tvs.tv_usec)/1000000.0;
+    fprintf(stderr, "thread %d's total time: %f\n", id, span);
+	//return NULL;
+}
+
 int main(int argc, char * argv[]){
-	if ( argc != 5 ) {
+	int nthreads, tid;
+
+    /* Check how many processors are available */
+
+    printf("There are %d processors\n", omp_get_num_procs());
+
+    /* Set the number of threads to 4 */
+    //omp_set_num_threads(NUM_THREADS);
+
+	if ( argc != 6 ) {
 		printf("usage: ./meshSimplification input output ratio parti\n");
 		return 0;
 	}
@@ -215,19 +323,45 @@ int main(int argc, char * argv[]){
 	freopen(argv[2], "w", stdout);
 	parti = atoi(argv[4]);
 	readFile();
-	times = v.size() * (1.0 - atof(argv[3]));
+	percentage = atof(argv[3]);
+	NUM_THREADS = atoi(argv[5]);
 	fprintf(stderr, "Reading file finished\n");
-	prepare();
-	int avai = 0;
-	for (int i = 0; i < v.size(); i++) {
-		if (!margin[i]) avai += 1;
+	for (int i = 0; i < parti * parti * parti; i++) prepare(i);
+	for (int i = 0; i < parti * parti * parti; i++)
+		for (int j = i + 1; j < parti * parti * parti; j++)
+			if (local_times[i]<local_times[j]) {
+				int tmp = local_times[i];
+				local_times[i] = local_times[j];
+				local_times[j] = tmp;
+				priority_queue<pair<double, Pair>, vector<pair<double, Pair> >, greater<pair<double, Pair> > > q_tmp = qs[i];
+				qs[i] = qs[j];
+				qs[j] = q_tmp;
+			}
+	struct timeval tvs,tve;
+	omp_set_num_threads(NUM_THREADS);
+    gettimeofday(&tvs,NULL);
+	/*int ids[NUM_THREADS];
+	for (int i = 0; i < NUM_THREADS; i++) {
+		ids[i] = i;
+		pthread_create(&threads[i], NULL, func, (void*) &ids[i]);
 	}
-	//times = min(times,avai * 999 / 1000);
-	int num = 0;
-	while(true) {
-		num += merge();
-		if ( num >= times ) break;
-	}
+	for (int i = 0; i < NUM_THREADS; i++) {
+		pthread_join(threads[i], NULL);
+	}*/
+	#pragma omp parallel private(nthreads, tid)
+    {
+
+        /* Obtain and print thread id */
+        tid = omp_get_thread_num();
+        nthreads = omp_get_num_threads();
+        //printf("Hello World from thread = %d, total %d\n", tid, nthreads);
+
+        func(tid);
+    }  /* All threads join master thread and terminate */
+
+	gettimeofday(&tve,NULL);
+    double span = tve.tv_sec-tvs.tv_sec + (tve.tv_usec-tvs.tv_usec)/1000000.0;
+    fprintf(stderr, "total time: %f\n", span);
 	int n = 0;
 	vector<int> id;
 	id.resize(v.size());

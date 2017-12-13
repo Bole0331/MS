@@ -168,7 +168,7 @@ int main(int argc, char * argv[]){
 	}
 	gettimeofday(&tve,NULL);
 	double span = tve.tv_sec-tvs.tv_sec + (tve.tv_usec-tvs.tv_usec)/1000000.0;
-	fprintf(stderr, "total time: %f\n", span);
+	fprintf(stderr, "\ntotal time: %f\n", span);
 	fprintf(stderr, "parallel: %f%%\n", parallel_time / span);
 	fprintf(stderr, "tasks: %f\n", iter_time * 1.0 / loop_time);
 	int n = 0;
